@@ -76,6 +76,67 @@ export async function compressImage(file: File, maxBytes: number): Promise<strin
 }
 
 export async function imageFileToJpegFile(file: File, maxBytes: number): Promise<File> {
+  const { blob } = await imageFileToJpegBlob(file, maxBytes);
+  return new File([blob], 'document.jpg', { type: 'image/jpeg' });
+}
+
+export async function imageFileToPdfFile(file: File, maxBytes: number): Promise<File> {
+  const { blob, width, height } = await imageFileToJpegBlob(file, maxBytes);
+  const imageBytes = new Uint8Array(await blob.arrayBuffer());
+  const maxPageWidth = 612;
+  const pageWidth = Math.min(maxPageWidth, width);
+  const pageHeight = Math.round((height / width) * pageWidth);
+  const content = `q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Im0 Do\nQ\n`;
+  const objects = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    `2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n`,
+    `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`,
+    {
+      prefix: `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>\nstream\n`,
+      bytes: imageBytes,
+      suffix: '\nendstream\nendobj\n'
+    },
+    `5 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj\n`
+  ];
+
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array[] = [encoder.encode('%PDF-1.4\n')];
+  const offsets: number[] = [0];
+  let byteOffset = chunks[0].length;
+
+  objects.forEach((object) => {
+    offsets.push(byteOffset);
+    const objectChunks =
+      typeof object === 'string'
+        ? [encoder.encode(object)]
+        : [encoder.encode(object.prefix), object.bytes, encoder.encode(object.suffix)];
+
+    objectChunks.forEach((chunk) => {
+      chunks.push(chunk);
+      byteOffset += chunk.length;
+    });
+  });
+
+  const xrefOffset = byteOffset;
+  const xrefRows = offsets
+    .map((offset, index) => (index === 0 ? '0000000000 65535 f ' : `${String(offset).padStart(10, '0')} 00000 n `))
+    .join('\n');
+  const trailer = `xref\n0 ${offsets.length}\n${xrefRows}\ntrailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  chunks.push(encoder.encode(trailer));
+
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const pdfBytes = new Uint8Array(totalLength);
+  let cursor = 0;
+
+  chunks.forEach((chunk) => {
+    pdfBytes.set(chunk, cursor);
+    cursor += chunk.length;
+  });
+
+  return new File([pdfBytes.buffer], 'document.pdf', { type: 'application/pdf' });
+}
+
+async function imageFileToJpegBlob(file: File, maxBytes: number) {
   const dataUrl = await fileToDataUrl(file);
   const image = await new Promise<HTMLImageElement>((resolve, reject) => {
     const element = new Image();
@@ -106,7 +167,11 @@ export async function imageFileToJpegFile(file: File, maxBytes: number): Promise
     blob = await canvasToBlob(canvas, quality);
   }
 
-  return new File([blob], 'document.jpg', { type: 'image/jpeg' });
+  return {
+    blob,
+    width: canvas.width,
+    height: canvas.height
+  };
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, FileCheck2, MessageCircle, Mic2, ShieldCheck, Upload } from 'lucide-react';
+import { AlertTriangle, FileCheck2, Lock, MessageCircle, Mic2, ShieldCheck, Sparkles, Upload } from 'lucide-react';
 import { DocumentPreview } from './components/features/DocumentPreview';
 import { DocumentUploader } from './components/features/DocumentUploader';
 import { LanguageSelector } from './components/features/LanguageSelector';
@@ -227,6 +227,30 @@ function App() {
           </Button>
         </section>
 
+        <section className="mb-5 grid gap-3 md:grid-cols-3" aria-label="Submission highlights">
+          <div className="rounded-lg border border-slate-200 bg-white/90 p-4 shadow-sm">
+            <div className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-950">
+              <Sparkles className="h-4 w-4 text-saffron" aria-hidden="true" />
+              Multilingual AI
+            </div>
+            <p className="text-sm leading-6 text-slate-600">Ask in Hindi, Tamil, Telugu, Bengali, or English and get answers in the same language.</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white/90 p-4 shadow-sm">
+            <div className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-950">
+              <Lock className="h-4 w-4 text-success" aria-hidden="true" />
+              Privacy aware
+            </div>
+            <p className="text-sm leading-6 text-slate-600">No login or database. Documents are only processed for the current session.</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white/90 p-4 shadow-sm">
+            <div className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-950">
+              <FileCheck2 className="h-4 w-4 text-sovereign" aria-hidden="true" />
+              Submission ready
+            </div>
+            <p className="text-sm leading-6 text-slate-600">Supports image uploads and PDFs, with mobile-first controls for evaluator demos.</p>
+          </div>
+        </section>
+
         <nav className="mb-4 grid grid-cols-2 rounded-lg border border-slate-200 bg-white p-1 shadow-sm lg:hidden" aria-label="Main sections">
           {[
             { id: 'upload' as const, label: 'Upload', icon: Upload },
@@ -277,7 +301,7 @@ function App() {
                     <h2 className="text-sm font-bold text-slate-950">Analysis status</h2>
                     <p className="mt-1 text-sm text-slate-600">
                       {isAnalyzing
-                        ? 'Analyzing document with Sarvam...'
+                        ? 'Analyzing document with Sarvam. This can take a few moments for real IDs.'
                         : parsedDocument
                           ? 'Ready for questions.'
                           : 'Preview is ready. Analyze when the document looks clear.'}

@@ -1,5 +1,5 @@
 import { ACCEPTED_IMAGE_TYPES, DEMO_PARSED_DOCUMENT, ERROR_COPY, LANGUAGES, MAX_API_IMAGE_BYTES } from './constants';
-import { extractJsonObject, imageFileToJpegFile } from './utils';
+import { extractJsonObject, imageFileToPdfFile } from './utils';
 import type { ApiAnswer, LanguageCode, ParsedDocument } from '../types';
 
 const SARVAM_BASE_URL = 'https://api.sarvam.ai';
@@ -105,7 +105,7 @@ export async function analyzeDocumentImage(file: File, language: LanguageCode): 
     body: JSON.stringify({
       job_parameters: {
         language: selectedLanguage.sarvamCode,
-        output_format: 'json'
+        output_format: 'md'
       }
     })
   });
@@ -203,7 +203,7 @@ async function prepareSarvamUploadFile(file: File) {
   }
 
   if (ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-    return imageFileToJpegFile(file, MAX_API_IMAGE_BYTES);
+    return imageFileToPdfFile(file, MAX_API_IMAGE_BYTES);
   }
 
   throw new Error('Unsupported document type. Please upload a JPG, PNG, WEBP, or PDF file.');
