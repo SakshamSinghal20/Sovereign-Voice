@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560" role="img" aria-labelledby="title desc">
+  <title id="title">Synthetic demo Aadhaar card</title>
+  <desc id="desc">A fictional Aadhaar style identity document for product demonstration.</desc>
+  <rect width="900" height="560" rx="28" fill="#fff"/>
+  <rect x="0" y="0" width="900" height="112" rx="28" fill="#fff7ed"/>
+  <rect x="0" y="88" width="900" height="24" fill="#FF9933"/>
+  <rect x="0" y="448" width="900" height="24" fill="#10B981"/>
+  <text x="48" y="62" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="800" fill="#111827">भारत सरकार</text>
+  <text x="654" y="62" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="800" fill="#111827">Government of India</text>
+  <circle cx="450" cy="56" r="31" fill="#7C3AED"/>
+  <path d="M450 28c14 18 14 38 0 56-14-18-14-38 0-56Z" fill="#fff"/>
+  <text x="450" y="148" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800" fill="#7C3AED">AADHAAR DEMO DOCUMENT</text>
+  <rect x="52" y="174" width="178" height="208" rx="14" fill="#e5e7eb"/>
+  <circle cx="141" cy="246" r="44" fill="#c4b5fd"/>
+  <path d="M72 361c22-58 116-58 138 0" fill="#c4b5fd"/>
+  <text x="272" y="218" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="800" fill="#111827">Asha Sharma</text>
+  <text x="272" y="260" font-family="Inter, Arial, sans-serif" font-size="22" fill="#374151">DOB: 14/03/1994</text>
+  <text x="272" y="298" font-family="Inter, Arial, sans-serif" font-size="22" fill="#374151">Gender: Female</text>
+  <text x="272" y="336" font-family="Inter, Arial, sans-serif" font-size="22" fill="#374151">Address: Jaipur, Rajasthan</text>
+  <text x="450" y="428" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="42" font-weight="800" letter-spacing="8" fill="#111827">XXXX XXXX 2847</text>
+  <text x="450" y="512" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700" fill="#111827">मेरा आधार, मेरी पहचान</text>
+  <text x="828" y="520" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700" fill="#EF4444">FICTIONAL SAMPLE</text>
+</svg>
