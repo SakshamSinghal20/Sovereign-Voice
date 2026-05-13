@@ -324,9 +324,7 @@ export async function askQuestionAboutDocument(
   document: ParsedDocument,
   language: LanguageCode
 ): Promise<ApiAnswer> {
-  const apiKey = getApiKey();
-
-  if (!apiKey) {
+  if (!hasSarvamApiKey()) {
     return localAnswer(question, document, language);
   }
 
@@ -511,7 +509,11 @@ function collectText(value: unknown): string[] {
 }
 
 function sarvamUrl(path: string) {
-  return `${USE_SERVER_PROXY ? SARVAM_PROXY_BASE_URL : SARVAM_BASE_URL}${path}`;
+  if (USE_SERVER_PROXY) {
+    return `${SARVAM_PROXY_BASE_URL}?path=${encodeURIComponent(path.replace(/^\/+/, ''))}`;
+  }
+
+  return `${SARVAM_BASE_URL}${path}`;
 }
 
 function storageUploadUrl(url: string) {

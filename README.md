@@ -26,3 +26,5 @@ The demo mode works without an API key using a synthetic sample Aadhaar-style do
 
 For Netlify, the included `netlify.toml` publishes `dist` after `npm run build`.
 For Vercel, use the Vite defaults: build command `npm run build`, output directory `dist`, and add `SARVAM_API_KEY` in Project Settings -> Environment Variables.
+
+Production builds call Sarvam through the Vercel serverless proxy at `/api/sarvam?path=...`. Keep `SARVAM_API_KEY` configured on the server; the browser does not need `VITE_SARVAM_API_KEY` in production.
