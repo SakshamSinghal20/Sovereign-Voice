@@ -3,9 +3,11 @@ import { extractJsonObject, imageFileToPdfFile } from './utils';
 import type { ApiAnswer, LanguageCode, ParsedDocument } from '../types';
 
 const SARVAM_BASE_URL = 'https://api.sarvam.ai';
+const SARVAM_PROXY_BASE_URL = '/api/sarvam';
 const SARVAM_CHAT_MODEL = 'sarvam-30b';
 const DOCUMENT_JOB_STATES_DONE = ['Completed', 'PartiallyCompleted'];
 const DOCUMENT_JOB_STATES_FAILED = ['Failed'];
+const USE_SERVER_PROXY = import.meta.env.PROD;
 
 interface SarvamChatPayload {
   choices?: Array<{ message?: { content?: string } }>;
@@ -31,14 +33,20 @@ function getApiKey() {
 }
 
 export function hasSarvamApiKey() {
-  return Boolean(getApiKey());
+  return USE_SERVER_PROXY || Boolean(getApiKey());
 }
 
 function getLanguage(language: LanguageCode) {
   return LANGUAGES.find((item) => item.code === language) ?? LANGUAGES[0];
 }
 
-function getSarvamHeaders() {
+function getSarvamHeaders(): Record<string, string> {
+  if (USE_SERVER_PROXY) {
+    return {
+      'Content-Type': 'application/json'
+    };
+  }
+
   const apiKey = getApiKey();
 
   if (!apiKey) {
@@ -76,7 +84,7 @@ async function callSarvamChat(messages: Array<{ role: 'system' | 'user'; content
   };
 
   const payload = await requestJsonWithFallback<SarvamChatPayload>(
-    [`${SARVAM_BASE_URL}/chat/completions`, `${SARVAM_BASE_URL}/v1/chat/completions`],
+    [sarvamUrl('/chat/completions'), sarvamUrl('/v1/chat/completions')],
     init
   );
 
@@ -99,7 +107,7 @@ export async function analyzeDocumentImage(file: File, language: LanguageCode): 
   const selectedLanguage = getLanguage(language);
   const uploadFile = await prepareSarvamUploadFile(file);
 
-  const job = await requestJson<SarvamJobResponse>(`${SARVAM_BASE_URL}/doc-digitization/job/v1`, {
+  const job = await requestJson<SarvamJobResponse>(sarvamUrl('/doc-digitization/job/v1'), {
     method: 'POST',
     headers: getSarvamHeaders(),
     body: JSON.stringify({
@@ -110,7 +118,7 @@ export async function analyzeDocumentImage(file: File, language: LanguageCode): 
     })
   });
 
-  const upload = await requestJson<SarvamUploadResponse>(`${SARVAM_BASE_URL}/doc-digitization/job/v1/upload-files`, {
+  const upload = await requestJson<SarvamUploadResponse>(sarvamUrl('/doc-digitization/job/v1/upload-files'), {
     method: 'POST',
     headers: getSarvamHeaders(),
     body: JSON.stringify({
@@ -126,7 +134,7 @@ export async function analyzeDocumentImage(file: File, language: LanguageCode): 
 
   await uploadToSignedUrl(uploadUrl, uploadFile);
 
-  await requestJson<SarvamJobResponse>(`${SARVAM_BASE_URL}/doc-digitization/job/v1/${job.job_id}/start`, {
+  await requestJson<SarvamJobResponse>(sarvamUrl(`/doc-digitization/job/v1/${job.job_id}/start`), {
     method: 'POST',
     headers: getSarvamHeaders(),
     body: JSON.stringify({})
@@ -144,6 +152,10 @@ export async function analyzeDocumentImage(file: File, language: LanguageCode): 
 }
 
 async function tryDirectDocumentAnalysis(file: File, language: LanguageCode) {
+  if (USE_SERVER_PROXY) {
+    return null;
+  }
+
   const selectedLanguage = getLanguage(language);
   const formData = new FormData();
   formData.append('file', file, file.name);
@@ -182,7 +194,7 @@ async function tryDirectDocumentAnalysis(file: File, language: LanguageCode) {
 
 async function waitForDocumentJob(jobId: string) {
   for (let attempt = 0; attempt < 24; attempt += 1) {
-    const status = await requestJson<SarvamJobResponse>(`${SARVAM_BASE_URL}/doc-digitization/job/v1/${jobId}/status`, {
+    const status = await requestJson<SarvamJobResponse>(sarvamUrl(`/doc-digitization/job/v1/${jobId}/status`), {
       method: 'GET',
       headers: getSarvamHeaders()
     });
@@ -211,7 +223,7 @@ async function prepareSarvamUploadFile(file: File) {
 
 async function downloadDocumentText(jobId: string) {
   const payload = await requestJson<SarvamDownloadResponse>(
-    `${SARVAM_BASE_URL}/doc-digitization/job/v1/${jobId}/download-files`,
+    sarvamUrl(`/doc-digitization/job/v1/${jobId}/download-files`),
     {
       method: 'POST',
       headers: getSarvamHeaders(),
@@ -234,7 +246,7 @@ async function downloadDocumentText(jobId: string) {
     throw new Error('Sarvam completed the job but did not return a readable output file.');
   }
 
-  const response = await fetch(downloadUrl);
+  const response = await fetch(storageDownloadUrl(downloadUrl));
   if (!response.ok) {
     throw new Error(`Unable to download Sarvam output: ${response.status}`);
   }
@@ -440,6 +452,23 @@ async function requestJsonWithFallback<T>(urls: string[], init: RequestInit): Pr
 }
 
 async function uploadToSignedUrl(url: string, file: File) {
+  if (USE_SERVER_PROXY) {
+    const response = await fetch(storageUploadUrl(url), {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type
+      },
+      body: file
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Unable to upload document through server proxy: ${response.status} ${detail}`);
+    }
+
+    return;
+  }
+
   const headers: Record<string, string> = {
     'Content-Type': file.type
   };
@@ -479,6 +508,18 @@ function collectText(value: unknown): string[] {
   }
 
   return [];
+}
+
+function sarvamUrl(path: string) {
+  return `${USE_SERVER_PROXY ? SARVAM_PROXY_BASE_URL : SARVAM_BASE_URL}${path}`;
+}
+
+function storageUploadUrl(url: string) {
+  return `/api/storage/upload?url=${encodeURIComponent(url)}`;
+}
+
+function storageDownloadUrl(url: string) {
+  return USE_SERVER_PROXY ? `/api/storage/download?url=${encodeURIComponent(url)}` : url;
 }
 
 function compactDocumentSummary(document: ParsedDocument) {
