@@ -1,3 +1,4 @@
+import { strFromU8, unzipSync } from 'fflate';
 import { ACCEPTED_IMAGE_TYPES, DEMO_PARSED_DOCUMENT, ERROR_COPY, LANGUAGES, MAX_API_IMAGE_BYTES } from './constants';
 import { extractJsonObject, imageFileToPdfFile } from './utils';
 import type { ApiAnswer, LanguageCode, ParsedDocument } from '../types';
@@ -239,7 +240,8 @@ async function downloadDocumentText(jobId: string) {
   const preferred = entries.find(([name, value]) => {
     const contentType = value.file_metadata?.contentType ?? '';
     return name.toLowerCase().endsWith('.json') || contentType.includes('json');
-  }) ?? entries.find(([name]) => /\.(md|txt|html)$/i.test(name));
+  }) ?? entries.find(([name]) => /\.(md|txt|html)$/i.test(name))
+    ?? entries.find(([name]) => /\.zip$/i.test(name));
 
   const downloadUrl = preferred ? getFileUrl({ [preferred[0]]: preferred[1] }, preferred[0]) : '';
   if (!downloadUrl) {
@@ -252,12 +254,40 @@ async function downloadDocumentText(jobId: string) {
   }
 
   const contentType = response.headers.get('content-type') ?? preferred?.[1].file_metadata?.contentType ?? '';
+  if (contentType.includes('zip') || preferred?.[0].toLowerCase().endsWith('.zip')) {
+    return extractTextFromZip(await response.arrayBuffer());
+  }
+
   if (contentType.includes('json') || preferred?.[0].toLowerCase().endsWith('.json')) {
     const json = await response.json();
     return collectText(json).join('\n').trim() || JSON.stringify(json);
   }
 
   return response.text();
+}
+
+function extractTextFromZip(buffer: ArrayBuffer) {
+  const files = unzipSync(new Uint8Array(buffer));
+  const entries = Object.entries(files);
+  const preferred = entries.find(([name]) => /\.(json|md|txt|html)$/i.test(name)) ?? entries[0];
+
+  if (!preferred) {
+    throw new Error('Sarvam completed the job but returned an empty ZIP file.');
+  }
+
+  const [name, bytes] = preferred;
+  const text = strFromU8(bytes);
+
+  if (name.toLowerCase().endsWith('.json')) {
+    try {
+      const json = JSON.parse(text);
+      return collectText(json).join('\n').trim() || text;
+    } catch {
+      return text;
+    }
+  }
+
+  return text;
 }
 
 async function structureExtractedText(extractedText: string, language: LanguageCode) {
