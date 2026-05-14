@@ -317,8 +317,13 @@ export async function askQuestionAboutDocument(
   document: ParsedDocument,
   language: LanguageCode
 ): Promise<ApiAnswer> {
+  const local = localAnswer(question, document, language);
+  if (isCommonDocumentQuestion(question)) {
+    return local;
+  }
+
   if (!hasSarvamApiKey()) {
-    return localAnswer(question, document, language);
+    return local;
   }
 
   const selectedLanguage = getLanguage(language);
@@ -335,15 +340,15 @@ export async function askQuestionAboutDocument(
         content: `Requested language: ${selectedLanguage.nativeName} (${selectedLanguage.sarvamCode})\nDocument context: ${JSON.stringify(getSafeDocumentContext(document))}\n\nQuestion: ${question}`
       }
     ]);
-    const localizedAnswer = await ensureAnswerLanguage(answer, language);
+    const localizedAnswer = await ensureAnswerLanguage(answer, language, question, document);
 
     return {
-      answer: localizedAnswer || localAnswer(question, document, language).answer,
+      answer: localizedAnswer || local.answer,
       confidence: document.confidence
     };
   } catch (error) {
     console.warn('Sarvam chat failed, using local fallback answer.', error);
-    return localAnswer(question, document, language);
+    return local;
   }
 }
 
@@ -402,8 +407,16 @@ export function getDocumentDisplayFields(document: ParsedDocument, language: Lan
   return document.localizedFields?.[language] ?? buildFallbackLocalizedFields(document, language);
 }
 
-async function ensureAnswerLanguage(answer: string, language: LanguageCode) {
-  if (!answer.trim() || language === 'en' || hasNativeScript(answer, language)) {
+async function ensureAnswerLanguage(answer: string, language: LanguageCode, question: string, document: ParsedDocument) {
+  if (!answer.trim()) {
+    return answer;
+  }
+
+  if (language === 'en') {
+    return hasIndicScript(answer) ? localAnswer(question, document, language).answer : answer;
+  }
+
+  if (hasNativeScript(answer, language)) {
     return answer;
   }
 
@@ -436,6 +449,10 @@ function hasNativeScript(value: string, language: LanguageCode) {
   };
 
   return scriptRanges[language].test(value);
+}
+
+function hasIndicScript(value: string) {
+  return /[\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF\u0C00-\u0C7F]/.test(value);
 }
 
 function getSafeDocumentContext(document: ParsedDocument) {
@@ -528,6 +545,8 @@ function translateStaticValue(value: string | undefined, language: LanguageCode)
 
   const normalized = value.toLowerCase();
   const dictionary: Record<string, Record<Exclude<LanguageCode, 'en'>, string>> = {
+    pan: { hi: 'PAN कार्ड', ta: 'PAN அட்டை', te: 'PAN కార్డ్', bn: 'PAN কার্ড' },
+    'pan card': { hi: 'PAN कार्ड', ta: 'PAN அட்டை', te: 'PAN కార్డ్', bn: 'PAN কার্ড' },
     aadhaar: { hi: 'आधार', ta: 'ஆதார்', te: 'ఆధార్', bn: 'আধার' },
     male: { hi: 'पुरुष', ta: 'ஆண்', te: 'పురుషుడు', bn: 'পুরুষ' },
     female: { hi: 'महिला', ta: 'பெண்', te: 'మహిళ', bn: 'মহিলা' },
@@ -535,6 +554,18 @@ function translateStaticValue(value: string | undefined, language: LanguageCode)
   };
 
   return dictionary[normalized]?.[language] ?? value;
+}
+
+function isCommonDocumentQuestion(question: string) {
+  const lowerQuestion = question.toLowerCase();
+
+  return (
+    /what is this|document type|which document|कौन सा|என்ன ஆவணம்|ఏ పత్రం|কোন নথি/.test(lowerQuestion) ||
+    /all details|extract all|सारी जानकारी|அனைத்து|అన్ని|সব তথ্য/.test(lowerQuestion) ||
+    /name|correct|नाम|பெயர்|పేరు|নাম/.test(lowerQuestion) ||
+    /aadhaar|आधार|number|नंबर|pan/.test(lowerQuestion) ||
+    /birth|dob|जन्म/.test(lowerQuestion)
+  );
 }
 
 function localAnswer(question: string, document: ParsedDocument, language: LanguageCode): ApiAnswer {
@@ -564,7 +595,7 @@ function localAnswer(question: string, document: ParsedDocument, language: Langu
       dob: `The date of birth is ${values.dob ?? 'not clearly visible'}.`,
       address: `The address is ${values.address ?? 'not clearly visible'}.`,
       gender: `The gender is ${values.gender ?? 'not clearly visible'}.`,
-      type: `This appears to be an ${values.type} document.`,
+      type: `This appears to be a ${values.type} document.`,
       details: `I found these details: ${summary}`,
       fallback: `I found these details: ${summary}`
     },
@@ -662,6 +693,7 @@ function inferFieldsFromText(text: string) {
   const dobMatch = normalized.match(/(?:DOB|Date of Birth|जन्म तिथि)[^\d]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i);
   const genderMatch = normalized.match(/\b(MALE|FEMALE|पुरुष|महिला)\b/i);
   const aadhaarNumber = findAadhaarNumber(lines);
+  const panFields = extractPanFieldsFromLines(lines);
   const issuedMatch = normalized.match(/(?:Aadhaar no\. issued|issued)[^\d]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i);
   const address = extractAddressFromLines(lines);
 
@@ -672,9 +704,58 @@ function inferFieldsFromText(text: string) {
   if (aadhaarNumber) fields['Document Number'] = aadhaarNumber;
   if (issuedMatch?.[1]) fields['Issued Date'] = issuedMatch[1].trim();
   if (address) fields.Address = address;
+  Object.assign(fields, panFields);
   fields['Document Type'] = inferDocumentType(text);
 
   return fields;
+}
+
+function extractPanFieldsFromLines(lines: string[]) {
+  const fields: Record<string, string> = {};
+  const panIndex = lines.findIndex((line) => /\b[A-Z]{5}\d{4}[A-Z]\b/.test(line));
+  const dobIndex = lines.findIndex((line) => /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/.test(line));
+
+  if (panIndex >= 0) {
+    const match = lines[panIndex].match(/\b[A-Z]{5}\d{4}[A-Z]\b/);
+    if (match?.[0]) {
+      fields['Document Number'] = match[0];
+      fields['PAN Number'] = match[0];
+    }
+  }
+
+  if (dobIndex >= 0) {
+    const match = lines[dobIndex].match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/);
+    if (match?.[0]) {
+      fields['Date of Birth'] = match[0];
+    }
+  }
+
+  if (panIndex === -1 && !/permanent account number|income tax department|govt\.?\s+of\s+india/i.test(lines.join('\n'))) {
+    return fields;
+  }
+
+  const nameWindow = lines
+    .slice(0, dobIndex >= 0 ? dobIndex : Math.min(lines.length, 10))
+    .map((line) => normalizePersonName(line))
+    .filter((line) => isLikelyPanNameLine(line));
+
+  if (nameWindow[0]) {
+    fields['Full Name'] = nameWindow[0];
+  }
+
+  if (nameWindow[1]) {
+    fields["Father's Name"] = nameWindow[1];
+  }
+
+  return fields;
+}
+
+function isLikelyPanNameLine(line: string) {
+  if (!/^[A-Z][A-Z .'-]{2,}$/.test(line) || line.split(/\s+/).length < 2) {
+    return false;
+  }
+
+  return !/(INCOME|TAX|DEPARTMENT|GOVT|GOVERNMENT|INDIA|PERMANENT|ACCOUNT|NUMBER|SIGNATURE|FATHER|NAME)/i.test(line);
 }
 
 function extractAadhaarIdentityBlock(lines: string[]) {
@@ -913,8 +994,8 @@ function inferDocumentType(text: string) {
     return 'Aadhaar';
   }
 
-  if (lowerText.includes('permanent account number') || /\bpan\b/i.test(text)) {
-    return 'PAN';
+  if (lowerText.includes('permanent account number') || lowerText.includes('income tax department') || /\b[A-Z]{5}\d{4}[A-Z]\b/.test(text) || /\bpan\b/i.test(text)) {
+    return 'PAN card';
   }
 
   if (lowerText.includes('passport')) {

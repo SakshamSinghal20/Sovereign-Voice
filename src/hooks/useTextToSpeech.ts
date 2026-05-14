@@ -124,6 +124,8 @@ function normalizeSpeechText(text: string) {
   return text
     .replace(/[*_`#>]/g, '')
     .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/\bPAN\b/g, 'P A N')
+    .replace(/\bUIDAI\b/g, 'U I D A I')
     .replace(/\s+/g, ' ')
     .trim();
 }
