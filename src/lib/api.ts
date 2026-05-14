@@ -279,10 +279,10 @@ function normalizeParsedDocument(raw: string, extractedText: string, language: L
   const parsed = extractJsonObject(raw);
   const parsedFields = parsed ? flattenFields(parsed) : {};
   const inferredFields = inferFieldsFromText(extractedText);
-  const fields = {
+  const fields = sanitizeDocumentFields({
     ...parsedFields,
     ...inferredFields
-  };
+  }, extractedText);
 
   const pick = (...keys: string[]) => {
     for (const key of keys) {
@@ -310,6 +310,29 @@ function normalizeParsedDocument(raw: string, extractedText: string, language: L
     },
     confidence: parsed ? 0.88 : language === 'en' ? 0.74 : 0.7
   };
+}
+
+function sanitizeDocumentFields(fields: Record<string, string>, extractedText: string) {
+  const cleaned = { ...fields };
+  const documentType = inferDocumentType(extractedText);
+  const nameKeys = ['Full Name', 'Name', 'fullName', 'full_name'];
+
+  nameKeys.forEach((key) => {
+    const value = cleaned[key];
+    if (value && isInvalidPersonName(value)) {
+      delete cleaned[key];
+    }
+  });
+
+  if (documentType === 'PAN card' && !cleaned['Full Name']) {
+    const panName = extractPanNameFromText(extractedText);
+    if (panName) {
+      cleaned['Full Name'] = panName;
+    }
+  }
+
+  cleaned['Document Type'] = documentType;
+  return cleaned;
 }
 
 export async function askQuestionAboutDocument(
@@ -734,10 +757,7 @@ function extractPanFieldsFromLines(lines: string[]) {
     return fields;
   }
 
-  const nameWindow = lines
-    .slice(0, dobIndex >= 0 ? dobIndex : Math.min(lines.length, 10))
-    .map((line) => normalizePersonName(line))
-    .filter((line) => isLikelyPanNameLine(line));
+  const nameWindow = getPanNameCandidates(lines.slice(0, dobIndex >= 0 ? dobIndex : Math.min(lines.length, 16)));
 
   if (nameWindow[0]) {
     fields['Full Name'] = nameWindow[0];
@@ -750,12 +770,49 @@ function extractPanFieldsFromLines(lines: string[]) {
   return fields;
 }
 
+function extractPanNameFromText(text: string) {
+  const lines = prepareTextForModel(text)
+    .split(/\r?\n/)
+    .map((line) => cleanOcrLine(line))
+    .filter(Boolean);
+
+  return getPanNameCandidates(lines)[0] ?? '';
+}
+
+function getPanNameCandidates(lines: string[]) {
+  const candidates = lines.flatMap((line) => {
+    const normalized = normalizePersonName(line);
+    const afterDepartment = normalized.replace(/^.*\b(?:INCOME TAX DEPARTMENT|GOVT OF INDIA|GOVERNMENT OF INDIA)\b\s*/i, '');
+    return [afterDepartment, normalized].filter(Boolean);
+  });
+
+  return uniqueValues(candidates.filter((line) => isLikelyPanNameLine(line)));
+}
+
 function isLikelyPanNameLine(line: string) {
   if (!/^[A-Z][A-Z .'-]{2,}$/.test(line) || line.split(/\s+/).length < 2) {
     return false;
   }
 
-  return !/(INCOME|TAX|DEPARTMENT|GOVT|GOVERNMENT|INDIA|PERMANENT|ACCOUNT|NUMBER|SIGNATURE|FATHER|NAME)/i.test(line);
+  return !isInvalidPersonName(line);
+}
+
+function isInvalidPersonName(value: string) {
+  const normalized = value
+    .replace(/[\s,;:|/\\()[\]{}_-]+/g, ' ')
+    .trim();
+
+  if (!normalized) {
+    return true;
+  }
+
+  return /(सत्यमेव|जयते|दस्तावेज|आयकर|विभाग|भारत|सरकार|INCOME|TAX|DEPARTMENT|GOVT|GOVERNMENT|INDIA|PERMANENT|ACCOUNT|NUMBER|SIGNATURE|FATHER|DOCUMENT|CARD|AADHAAR|UIDAI|PHOTO|IMAGE)/i.test(
+    normalized
+  );
+}
+
+function uniqueValues(values: string[]) {
+  return [...new Set(values)];
 }
 
 function extractAadhaarIdentityBlock(lines: string[]) {
