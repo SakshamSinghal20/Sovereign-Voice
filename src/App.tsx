@@ -6,7 +6,7 @@ import { LanguageSelector } from './components/features/LanguageSelector';
 import { Button } from './components/ui/Button';
 import { Spinner } from './components/ui/Spinner';
 import { ToastViewport } from './components/ui/Toast';
-import { hasSarvamApiKey } from './lib/api';
+import { getDocumentDisplayFields, hasSarvamApiKey, localizeDocumentFields } from './lib/api';
 import { DEMO_MESSAGES, DEMO_PARSED_DOCUMENT } from './lib/constants';
 import { cn, createId, dataUrlToFile } from './lib/utils';
 import { useDocumentParser } from './hooks/useDocumentParser';
@@ -17,6 +17,13 @@ const ChatInterface = lazy(() =>
   import('./components/features/ChatInterface').then((module) => ({ default: module.ChatInterface }))
 );
 type ActiveTab = 'upload' | 'chat';
+const ANALYSIS_READY_COPY: Record<LanguageCode, string> = {
+  en: 'I found the document and extracted the visible details. You can now ask questions in your selected language.',
+  hi: 'मैंने दस्तावेज़ पढ़ लिया है और दिख रही जानकारी निकाल ली है। अब आप इसी भाषा में सवाल पूछ सकते हैं।',
+  ta: 'ஆவணத்தைப் படித்து தெரியும் விவரங்களை எடுத்துவிட்டேன். இப்போது இந்த மொழியில் கேள்விகள் கேட்கலாம்.',
+  te: 'నేను పత్రాన్ని చదివి కనిపిస్తున్న వివరాలను తీసుకున్నాను. ఇప్పుడు ఈ భాషలో ప్రశ్నలు అడగవచ్చు.',
+  bn: 'আমি নথিটি পড়ে দৃশ্যমান তথ্য বের করেছি। এখন আপনি এই ভাষায় প্রশ্ন করতে পারেন।'
+};
 
 function App() {
   const [uploadedDocument, setUploadedDocument] = useState<File | null>(null);
@@ -34,6 +41,10 @@ function App() {
   const fileName = uploadedDocument?.name ?? (isDemoMode ? 'sample-aadhaar.svg' : '');
   const canAnalyze = Boolean(uploadedDocument && documentPreview && !parsedDocument);
   const isApiConfigured = hasSarvamApiKey();
+  const displayFields = useMemo(
+    () => (parsedDocument ? Object.entries(getDocumentDisplayFields(parsedDocument, selectedLanguage)).slice(0, 7) : []),
+    [parsedDocument, selectedLanguage]
+  );
 
   const notify = useCallback((toast: Omit<ToastMessage, 'id'>) => {
     const nextToast = { ...toast, id: createId('toast') };
@@ -50,6 +61,23 @@ function App() {
       }
     };
   }, [documentPreview]);
+
+  useEffect(() => {
+    if (!parsedDocument || parsedDocument.localizedFields?.[selectedLanguage]) {
+      return;
+    }
+
+    let isCancelled = false;
+    void localizeDocumentFields(parsedDocument, selectedLanguage).then((localizedDocument) => {
+      if (!isCancelled) {
+        setParsedDocument(localizedDocument);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [parsedDocument, selectedLanguage, setParsedDocument]);
 
   const welcomeMessage = useMemo<Message>(
     () => ({
@@ -118,7 +146,7 @@ function App() {
       const message: Message = {
         id: createId('msg'),
         role: 'assistant',
-        content: `I found a ${parsed.documentType ?? 'document'} and extracted the visible details. You can now ask questions in your selected language.`,
+        content: ANALYSIS_READY_COPY[selectedLanguage],
         timestamp: new Date(),
         type: 'document-ref'
       };
@@ -321,7 +349,7 @@ function App() {
 
                 {parsedDocument && (
                   <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
-                    {Object.entries(parsedDocument.fields).slice(0, 6).map(([key, value]) => (
+                    {displayFields.map(([key, value]) => (
                       <div key={key} className="rounded-md bg-slate-50 px-3 py-2">
                         <p className="text-xs font-semibold uppercase text-slate-500">{key}</p>
                         <p className="mt-1 font-semibold text-slate-900">{value}</p>

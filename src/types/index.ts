@@ -19,6 +19,7 @@ export interface ParsedDocument {
   issuedDate?: string;
   rawText: string;
   fields: Record<string, string>;
+  localizedFields?: Partial<Record<LanguageCode, Record<string, string>>>;
   confidence?: number;
 }
 

@@ -137,11 +137,21 @@ export function ChatInterface({
                 <AnswerDisplay
                   answer={message.content}
                   confidence={parsedDocument?.confidence}
+                  language={language}
                   onCopy={() => {
                     void navigator.clipboard?.writeText(message.content);
                     onNotify?.({ tone: 'success', title: 'Copied answer' });
                   }}
-                  onReadAloud={() => speak(message.content)}
+                  onReadAloud={() => {
+                    const started = speak(message.content);
+                    if (!started) {
+                      onNotify?.({
+                        tone: 'error',
+                        title: 'Audio unavailable',
+                        description: 'This browser could not start text-to-speech.'
+                      });
+                    }
+                  }}
                 />
               ) : (
                 <p className="whitespace-pre-wrap leading-6">{message.content}</p>

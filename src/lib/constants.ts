@@ -57,3 +57,59 @@ export const ERROR_COPY = {
   te: 'ఏదో తప్పు జరిగింది. దయచేసి మళ్లీ ప్రయత్నించండి.',
   bn: 'কিছু ভুল হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।'
 };
+
+export const FIELD_LABELS = {
+  en: {
+    fullName: 'Full Name',
+    documentNumber: 'Document Number',
+    dateOfBirth: 'Date of Birth',
+    gender: 'Gender',
+    address: 'Address',
+    documentType: 'Document Type',
+    issuedDate: 'Issued Date'
+  },
+  hi: {
+    fullName: 'पूरा नाम',
+    documentNumber: 'दस्तावेज़ नंबर',
+    dateOfBirth: 'जन्म तिथि',
+    gender: 'लिंग',
+    address: 'पता',
+    documentType: 'दस्तावेज़ का प्रकार',
+    issuedDate: 'जारी करने की तारीख'
+  },
+  ta: {
+    fullName: 'முழுப் பெயர்',
+    documentNumber: 'ஆவண எண்',
+    dateOfBirth: 'பிறந்த தேதி',
+    gender: 'பாலினம்',
+    address: 'முகவரி',
+    documentType: 'ஆவண வகை',
+    issuedDate: 'வெளியிட்ட தேதி'
+  },
+  te: {
+    fullName: 'పూర్తి పేరు',
+    documentNumber: 'పత్రం సంఖ్య',
+    dateOfBirth: 'పుట్టిన తేదీ',
+    gender: 'లింగం',
+    address: 'చిరునామా',
+    documentType: 'పత్రం రకం',
+    issuedDate: 'జారీ తేదీ'
+  },
+  bn: {
+    fullName: 'পূর্ণ নাম',
+    documentNumber: 'নথি নম্বর',
+    dateOfBirth: 'জন্মতারিখ',
+    gender: 'লিঙ্গ',
+    address: 'ঠিকানা',
+    documentType: 'নথির ধরন',
+    issuedDate: 'ইস্যুর তারিখ'
+  }
+};
+
+export const ANSWER_ACTION_COPY = {
+  en: { confidence: 'confidence', copy: 'Copy', readAloud: 'Read aloud' },
+  hi: { confidence: 'भरोसा', copy: 'कॉपी', readAloud: 'सुनें' },
+  ta: { confidence: 'நம்பிக்கை', copy: 'நகல்', readAloud: 'கேட்க' },
+  te: { confidence: 'నమ్మకం', copy: 'కాపీ', readAloud: 'వినండి' },
+  bn: { confidence: 'নিশ্চয়তা', copy: 'কপি', readAloud: 'শুনুন' }
+};

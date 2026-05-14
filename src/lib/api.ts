@@ -1,4 +1,4 @@
-import { ACCEPTED_IMAGE_TYPES, DEMO_PARSED_DOCUMENT, LANGUAGES, MAX_API_IMAGE_BYTES } from './constants';
+import { ACCEPTED_IMAGE_TYPES, DEMO_PARSED_DOCUMENT, FIELD_LABELS, LANGUAGES, MAX_API_IMAGE_BYTES } from './constants';
 import { extractJsonObject, imageFileToPdfFile } from './utils';
 import type { ApiAnswer, LanguageCode, ParsedDocument } from '../types';
 
@@ -7,7 +7,7 @@ const SARVAM_PROXY_BASE_URL = '/api/sarvam';
 const SARVAM_CHAT_MODEL = 'sarvam-30b';
 const DOCUMENT_JOB_STATES_DONE = ['Completed', 'PartiallyCompleted'];
 const DOCUMENT_JOB_STATES_FAILED = ['Failed'];
-const USE_SERVER_PROXY = import.meta.env.PROD;
+const USE_SERVER_PROXY = import.meta.env.PROD || import.meta.env.DEV;
 
 interface SarvamChatPayload {
   choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
@@ -260,11 +260,11 @@ async function structureExtractedText(extractedText: string, language: LanguageC
       {
         role: 'system',
         content:
-          'You extract structured fields from OCR text of Indian identity documents. Return only valid JSON with keys: Full Name, Document Number, Date of Birth, Address, Gender, Document Type, Issued Date, Other Details.'
+          'You extract structured fields from OCR text of Indian identity documents. Return only valid JSON with keys: Full Name, Full Name Hindi, Document Number, Date of Birth, Address, Gender, Document Type, Issued Date, Other Details. For Aadhaar, the Full Name is the identity block name near DOB/gender. Never use S/O, D/O, C/O, father name, or address names as Full Name.'
       },
       {
         role: 'user',
-        content: `OCR text:\n${extractedText.slice(0, 12000)}`
+        content: `OCR text:\n${prepareTextForModel(extractedText).slice(0, 12000)}`
       }
     ]);
 
@@ -277,7 +277,12 @@ async function structureExtractedText(extractedText: string, language: LanguageC
 
 function normalizeParsedDocument(raw: string, extractedText: string, language: LanguageCode): ParsedDocument {
   const parsed = extractJsonObject(raw);
-  const fields = parsed ? flattenFields(parsed) : inferFieldsFromText(extractedText);
+  const parsedFields = parsed ? flattenFields(parsed) : {};
+  const inferredFields = inferFieldsFromText(extractedText);
+  const fields = {
+    ...parsedFields,
+    ...inferredFields
+  };
 
   const pick = (...keys: string[]) => {
     for (const key of keys) {
@@ -298,8 +303,11 @@ function normalizeParsedDocument(raw: string, extractedText: string, language: L
     gender: pick('Gender', 'Sex'),
     documentType: pick('Document Type', 'Type') ?? inferDocumentType(extractedText),
     issuedDate: pick('Issued Date', 'Date of Issue'),
-    rawText: extractedText || raw,
+    rawText: prepareTextForModel(extractedText || raw),
     fields,
+    localizedFields: {
+      en: buildFallbackLocalizedFields({ fields, rawText: extractedText || raw }, 'en')
+    },
     confidence: parsed ? 0.88 : language === 'en' ? 0.74 : 0.7
   };
 }
@@ -320,22 +328,213 @@ export async function askQuestionAboutDocument(
       {
         role: 'system',
         content:
-          'You answer questions about a parsed Indian identity document. Answer only in the requested language. Be concise, helpful, and avoid exposing more sensitive information than the user asked for.'
+          'You answer questions about a parsed Indian identity document. Answer only in the requested language and native script. Do not use English labels or English sentences unless the requested language is English. Translate or transliterate names, document type, gender, and address when possible. For name questions, use Full Name from the identity block, never S/O, D/O, C/O, father name, or address names. Be concise and avoid exposing more sensitive information than the user asked for.'
       },
       {
         role: 'user',
-        content: `Requested language: ${selectedLanguage.nativeName} (${selectedLanguage.sarvamCode})\nDocument context: ${JSON.stringify(document)}\n\nQuestion: ${question}`
+        content: `Requested language: ${selectedLanguage.nativeName} (${selectedLanguage.sarvamCode})\nDocument context: ${JSON.stringify(getSafeDocumentContext(document))}\n\nQuestion: ${question}`
       }
     ]);
+    const localizedAnswer = await ensureAnswerLanguage(answer, language);
 
     return {
-      answer: answer || localAnswer(question, document, language).answer,
+      answer: localizedAnswer || localAnswer(question, document, language).answer,
       confidence: document.confidence
     };
   } catch (error) {
     console.warn('Sarvam chat failed, using local fallback answer.', error);
     return localAnswer(question, document, language);
   }
+}
+
+export async function localizeDocumentFields(document: ParsedDocument, language: LanguageCode): Promise<ParsedDocument> {
+  if (document.localizedFields?.[language]) {
+    return document;
+  }
+
+  if (language === 'en' || !hasSarvamApiKey()) {
+    return {
+      ...document,
+      localizedFields: {
+        ...document.localizedFields,
+        [language]: buildFallbackLocalizedFields(document, language)
+      }
+    };
+  }
+
+  const selectedLanguage = getLanguage(language);
+
+  try {
+    const content = await callSarvamChat([
+      {
+        role: 'system',
+        content:
+          'Translate and transliterate parsed Indian identity document fields for display. Return only valid JSON. Use the requested language and native script for every key and every value. Keep document numbers and dates as digits. Do not use English words unless the requested language is English.'
+      },
+      {
+        role: 'user',
+        content: `Requested language: ${selectedLanguage.nativeName} (${selectedLanguage.sarvamCode})\nFields: ${JSON.stringify(buildCanonicalDisplayFields(document))}`
+      }
+    ]);
+    const parsed = extractJsonObject(content);
+    const localized = parsed ? flattenFields(parsed) : buildFallbackLocalizedFields(document, language);
+
+    return {
+      ...document,
+      localizedFields: {
+        ...document.localizedFields,
+        [language]: localized
+      }
+    };
+  } catch (error) {
+    console.warn('Sarvam field localization failed, using local display fallback.', error);
+    return {
+      ...document,
+      localizedFields: {
+        ...document.localizedFields,
+        [language]: buildFallbackLocalizedFields(document, language)
+      }
+    };
+  }
+}
+
+export function getDocumentDisplayFields(document: ParsedDocument, language: LanguageCode) {
+  return document.localizedFields?.[language] ?? buildFallbackLocalizedFields(document, language);
+}
+
+async function ensureAnswerLanguage(answer: string, language: LanguageCode) {
+  if (!answer.trim() || language === 'en' || hasNativeScript(answer, language)) {
+    return answer;
+  }
+
+  const selectedLanguage = getLanguage(language);
+  const rewritten = await callSarvamChat([
+    {
+      role: 'system',
+      content:
+        'Rewrite the answer fully in the requested Indian language and native script. Do not add English words or English labels. Keep numbers as digits.'
+    },
+    {
+      role: 'user',
+      content: `Requested language: ${selectedLanguage.nativeName} (${selectedLanguage.sarvamCode})\nAnswer:\n${answer}`
+    }
+  ]);
+
+  return rewritten || answer;
+}
+
+function hasNativeScript(value: string, language: LanguageCode) {
+  if (language === 'en') {
+    return true;
+  }
+
+  const scriptRanges: Record<Exclude<LanguageCode, 'en'>, RegExp> = {
+    hi: /[\u0900-\u097F]/,
+    ta: /[\u0B80-\u0BFF]/,
+    te: /[\u0C00-\u0C7F]/,
+    bn: /[\u0980-\u09FF]/
+  };
+
+  return scriptRanges[language].test(value);
+}
+
+function getSafeDocumentContext(document: ParsedDocument) {
+  return {
+    ...buildCanonicalDisplayFields(document),
+    rawText: document.rawText.slice(0, 3000)
+  };
+}
+
+function buildCanonicalDisplayFields(document: Pick<ParsedDocument, 'fields' | 'rawText'> & Partial<ParsedDocument>) {
+  const values = {
+    fullName: getCanonicalFieldValue(document, 'fullName'),
+    documentNumber: getCanonicalFieldValue(document, 'documentNumber'),
+    dateOfBirth: getCanonicalFieldValue(document, 'dateOfBirth'),
+    gender: getCanonicalFieldValue(document, 'gender'),
+    address: getCanonicalFieldValue(document, 'address'),
+    documentType: getCanonicalFieldValue(document, 'documentType'),
+    issuedDate: getCanonicalFieldValue(document, 'issuedDate')
+  };
+
+  return Object.fromEntries(
+    Object.entries(values)
+      .filter(([, value]) => value)
+      .map(([key, value]) => [FIELD_LABELS.en[key as keyof typeof FIELD_LABELS.en], value])
+  ) as Record<string, string>;
+}
+
+function buildFallbackLocalizedFields(
+  document: Pick<ParsedDocument, 'fields' | 'rawText'> & Partial<ParsedDocument>,
+  language: LanguageCode
+) {
+  const labels = FIELD_LABELS[language];
+  const entries: Array<[keyof typeof FIELD_LABELS.en, string | undefined]> = [
+    ['fullName', getLocalizedFieldValue(document, 'fullName', language)],
+    ['documentNumber', getLocalizedFieldValue(document, 'documentNumber', language)],
+    ['dateOfBirth', getLocalizedFieldValue(document, 'dateOfBirth', language)],
+    ['gender', getLocalizedFieldValue(document, 'gender', language)],
+    ['address', getLocalizedFieldValue(document, 'address', language)],
+    ['documentType', getLocalizedFieldValue(document, 'documentType', language)],
+    ['issuedDate', getLocalizedFieldValue(document, 'issuedDate', language)]
+  ];
+
+  return Object.fromEntries(
+    entries
+      .filter(([, value]) => value)
+      .map(([key, value]) => [labels[key], value])
+  ) as Record<string, string>;
+}
+
+function getLocalizedFieldValue(
+  document: Pick<ParsedDocument, 'fields' | 'rawText'> & Partial<ParsedDocument>,
+  key: keyof typeof FIELD_LABELS.en,
+  language: LanguageCode
+) {
+  const canonical = getCanonicalFieldValue(document, key);
+
+  if (key === 'fullName' && language === 'hi') {
+    return document.fields['Full Name Hindi'] ?? canonical;
+  }
+
+  if (key === 'address' && language === 'hi') {
+    return document.fields['Address Hindi'] ?? canonical;
+  }
+
+  return translateStaticValue(canonical, language);
+}
+
+function getCanonicalFieldValue(
+  document: Pick<ParsedDocument, 'fields' | 'rawText'> & Partial<ParsedDocument>,
+  key: keyof typeof FIELD_LABELS.en
+) {
+  const fields = document.fields ?? {};
+  const fieldMap: Record<keyof typeof FIELD_LABELS.en, Array<string | undefined>> = {
+    fullName: [document.fullName, fields['Full Name'], fields.Name, fields.fullName, fields.full_name],
+    documentNumber: [document.documentNumber, fields['Document Number'], fields['Aadhaar Number'], fields['PAN Number']],
+    dateOfBirth: [document.dateOfBirth, fields['Date of Birth'], fields.DOB, fields['Birth Date']],
+    gender: [document.gender, fields.Gender, fields.Sex],
+    address: [document.address, fields.Address, fields['Residential Address']],
+    documentType: [document.documentType, fields['Document Type'], fields.Type],
+    issuedDate: [document.issuedDate, fields['Issued Date'], fields['Date of Issue']]
+  };
+
+  return fieldMap[key].find((value) => value && value !== 'Not visible' && value !== 'null')?.trim();
+}
+
+function translateStaticValue(value: string | undefined, language: LanguageCode) {
+  if (!value || language === 'en') {
+    return value;
+  }
+
+  const normalized = value.toLowerCase();
+  const dictionary: Record<string, Record<Exclude<LanguageCode, 'en'>, string>> = {
+    aadhaar: { hi: 'आधार', ta: 'ஆதார்', te: 'ఆధార్', bn: 'আধার' },
+    male: { hi: 'पुरुष', ta: 'ஆண்', te: 'పురుషుడు', bn: 'পুরুষ' },
+    female: { hi: 'महिला', ta: 'பெண்', te: 'మహిళ', bn: 'মহিলা' },
+    'indian identity': { hi: 'भारतीय पहचान दस्तावेज़', ta: 'இந்திய அடையாள ஆவணம்', te: 'భారతీయ గుర్తింపు పత్రం', bn: 'ভারতীয় পরিচয় নথি' }
+  };
+
+  return dictionary[normalized]?.[language] ?? value;
 }
 
 function localAnswer(question: string, document: ParsedDocument, language: LanguageCode): ApiAnswer {
@@ -349,14 +548,14 @@ function localAnswer(question: string, document: ParsedDocument, language: Langu
   const asksAllDetails = /all details|extract all|सारी जानकारी|அனைத்து|అన్ని|সব তথ্য/.test(lowerQuestion);
 
   const values = {
-    name: document.fullName ?? document.fields.Name,
-    number: document.documentNumber,
-    dob: document.dateOfBirth,
-    address: document.address,
-    gender: document.gender,
-    type: document.documentType ?? 'Indian identity'
+    name: getLocalizedFieldValue(document, 'fullName', language),
+    number: getLocalizedFieldValue(document, 'documentNumber', language),
+    dob: getLocalizedFieldValue(document, 'dateOfBirth', language),
+    address: getLocalizedFieldValue(document, 'address', language),
+    gender: getLocalizedFieldValue(document, 'gender', language),
+    type: getLocalizedFieldValue(document, 'documentType', language) ?? translateStaticValue('Indian identity', language)
   };
-  const summary = compactDocumentSummary(document);
+  const summary = compactDocumentSummary(document, language);
 
   const templates: Record<LanguageCode, Record<string, string>> = {
     en: {
@@ -453,19 +652,142 @@ function flattenFields(parsed: Record<string, unknown>) {
 
 function inferFieldsFromText(text: string) {
   const fields: Record<string, string> = {};
-  const normalized = text.replace(/\s+/g, ' ');
-  const nameMatch = normalized.match(/(?:Name|नाम)\s*[:\-]?\s*([A-Z][A-Z\s]{3,})/i);
-  const dobMatch = normalized.match(/(?:DOB|Date of Birth|जन्म तिथि)\s*[:\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i);
+  const prepared = prepareTextForModel(text);
+  const lines = prepared
+    .split(/\r?\n/)
+    .map((line) => cleanOcrLine(line))
+    .filter(Boolean);
+  const normalized = lines.join('\n');
+  const identityBlock = extractAadhaarIdentityBlock(lines);
+  const dobMatch = normalized.match(/(?:DOB|Date of Birth|जन्म तिथि)[^\d]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i);
   const genderMatch = normalized.match(/\b(MALE|FEMALE|पुरुष|महिला)\b/i);
-  const aadhaarMatch = normalized.match(/\b\d{4}\s\d{4}\s\d{4}\b/);
+  const aadhaarNumber = findAadhaarNumber(lines);
+  const issuedMatch = normalized.match(/(?:Aadhaar no\. issued|issued)[^\d]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i);
+  const address = extractAddressFromLines(lines);
 
-  if (nameMatch?.[1]) fields['Full Name'] = nameMatch[1].trim();
+  if (identityBlock.englishName) fields['Full Name'] = identityBlock.englishName;
+  if (identityBlock.nativeName) fields['Full Name Hindi'] = identityBlock.nativeName;
   if (dobMatch?.[1]) fields['Date of Birth'] = dobMatch[1].trim();
-  if (genderMatch?.[1]) fields.Gender = genderMatch[1].trim();
-  if (aadhaarMatch?.[0]) fields['Document Number'] = aadhaarMatch[0].trim();
+  if (genderMatch?.[1]) fields.Gender = normalizeGender(genderMatch[1]);
+  if (aadhaarNumber) fields['Document Number'] = aadhaarNumber;
+  if (issuedMatch?.[1]) fields['Issued Date'] = issuedMatch[1].trim();
+  if (address) fields.Address = address;
   fields['Document Type'] = inferDocumentType(text);
 
   return fields;
+}
+
+function extractAadhaarIdentityBlock(lines: string[]) {
+  const dobIndex = lines.findIndex((line) => /DOB|Date of Birth|जन्म तिथि/i.test(line));
+  const searchWindow =
+    dobIndex >= 0 ? lines.slice(Math.max(0, dobIndex - 5), Math.min(lines.length, dobIndex + 3)) : lines.slice(0, 12);
+  const englishName = [...searchWindow].reverse().find(isLikelyEnglishPersonName);
+  const nativeName = [...searchWindow].reverse().find(isLikelyHindiPersonName);
+
+  return {
+    englishName: englishName ? normalizePersonName(englishName) : '',
+    nativeName: nativeName ? compactFieldValue(nativeName, 80) : ''
+  };
+}
+
+function isLikelyEnglishPersonName(line: string) {
+  const cleaned = normalizePersonName(line);
+  if (!/^[A-Z][A-Z .'-]{2,}$/.test(cleaned)) {
+    return false;
+  }
+
+  if (cleaned.split(/\s+/).length < 2) {
+    return false;
+  }
+
+  return !/(GOVERNMENT|INDIA|AADHAAR|UIDAI|UNIQUE|IDENTIFICATION|AUTHORITY|ADDRESS|MALE|FEMALE|DOB|DATE|ISSUED|VID|S\/O|D\/O|C\/O)/i.test(
+    cleaned
+  );
+}
+
+function isLikelyHindiPersonName(line: string) {
+  return /[\u0900-\u097F]/.test(line) && !/(भारत|सरकार|जन्म|तिथि|पुरुष|महिला|पता|आधार|पहचान|प्राधिकरण)/.test(line);
+}
+
+function normalizePersonName(value: string) {
+  return value
+    .replace(/[^A-Za-z .'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeGender(value: string) {
+  if (/female|महिला/i.test(value)) {
+    return 'Female';
+  }
+
+  if (/male|पुरुष/i.test(value)) {
+    return 'Male';
+  }
+
+  return compactFieldValue(value, 40);
+}
+
+function findAadhaarNumber(lines: string[]) {
+  const candidates = lines
+    .filter((line) => !/\bVID\b/i.test(line))
+    .flatMap((line) => line.match(/\b\d{4}\s?\d{4}\s?\d{4}\b/g) ?? [])
+    .map(formatAadhaarNumber);
+
+  return candidates.find(Boolean) ?? '';
+}
+
+function formatAadhaarNumber(value: string) {
+  const digits = value.replace(/\D/g, '');
+  return digits.length === 12 ? `${digits.slice(0, 4)} ${digits.slice(4, 8)} ${digits.slice(8)}` : value.trim();
+}
+
+function extractAddressFromLines(lines: string[]) {
+  const startIndex = lines.findIndex((line) => /^Address:?$/i.test(line) || /^Address:/i.test(line));
+  if (startIndex === -1) {
+    return '';
+  }
+
+  const collected: string[] = [];
+  const firstLine = lines[startIndex].replace(/^Address:\s*/i, '').trim();
+  if (firstLine) {
+    collected.push(firstLine);
+  }
+
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (
+      /^(VID|Details|Aadhaar|AADHAAR|1947|help@|www\.uidai|The image|This image)/i.test(line) ||
+      /\b\d{4}\s?\d{4}\s?\d{4}\b/.test(line)
+    ) {
+      break;
+    }
+
+    collected.push(line);
+  }
+
+  return compactFieldValue(collected.join('\n'), 260);
+}
+
+function cleanOcrLine(line: string) {
+  return line
+    .replace(/^["',{}\[\]]+|["',{}\[\]]+$/g, '')
+    .replace(/^text:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function compactFieldValue(value: string, maxLength: number) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => cleanOcrLine(line))
+    .filter(Boolean)
+    .join(', ')
+    .replace(/\s+,/g, ',')
+    .replace(/,\s*,/g, ',')
+    .slice(0, maxLength)
+    .trim();
 }
 
 async function extractTextFromZip(buffer: ArrayBuffer) {
@@ -513,24 +835,56 @@ async function extractTextFromZip(buffer: ArrayBuffer) {
     offset = dataEnd;
   }
 
-  const preferred =
-    entries.find((entry) => entry.name.toLowerCase().endsWith('.md')) ??
-    entries.find((entry) => entry.name.toLowerCase().endsWith('.json')) ??
-    entries[0];
-
-  if (!preferred) {
+  if (!entries.length) {
     throw new Error('Sarvam returned a zip, but no readable text output was found inside it.');
   }
 
-  if (preferred.name.toLowerCase().endsWith('.json')) {
-    try {
-      return collectText(JSON.parse(preferred.text)).join('\n').trim() || preferred.text;
-    } catch {
-      return preferred.text;
-    }
+  const metadataText = entries
+    .filter((entry) => entry.name.toLowerCase().endsWith('.json'))
+    .map((entry) => textFromJsonEntry(entry.text))
+    .filter(Boolean)
+    .join('\n');
+  const markdownText = entries
+    .filter((entry) => /\.(md|txt|html)$/i.test(entry.name))
+    .map((entry) => cleanExtractedText(entry.text))
+    .filter(Boolean)
+    .join('\n');
+
+  const combined = [metadataText, markdownText].filter(Boolean).join('\n\n').trim();
+  if (!combined) {
+    throw new Error('Sarvam returned a zip, but the OCR text was empty.');
   }
 
-  return preferred.text;
+  return combined;
+}
+
+function textFromJsonEntry(text: string) {
+  try {
+    return collectText(JSON.parse(text)).join('\n').trim();
+  } catch {
+    return cleanExtractedText(text);
+  }
+}
+
+function cleanExtractedText(text: string) {
+  return text
+    .replace(/!\[[^\]]*]\(data:image\/[^)]*\)/gi, ' ')
+    .replace(/data:image\/[a-z]+;base64,[A-Za-z0-9+/=\s]+/gi, ' ')
+    .replace(/"text"\s*:\s*"/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function prepareTextForModel(text: string) {
+  return cleanExtractedText(text)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !/^image$/i.test(line))
+    .join('\n')
+    .trim();
 }
 
 async function inflateRaw(bytes: Uint8Array) {
@@ -621,28 +975,43 @@ async function uploadToSignedUrl(url: string, file: File) {
 
 function collectText(value: unknown): string[] {
   if (typeof value === 'string') {
-    return [value];
+    const trimmed = value.trim();
+    if (
+      !trimmed ||
+      /^data:image\//i.test(trimmed) ||
+      /^\*?The image\b/i.test(trimmed) ||
+      /^This image\b/i.test(trimmed) ||
+      /^It consists of\b/i.test(trimmed)
+    ) {
+      return [];
+    }
+
+    return [trimmed];
   }
 
   if (typeof value === 'number' || typeof value === 'boolean') {
-    return [String(value)];
+    return [];
   }
 
   if (Array.isArray(value)) {
+    if (value.every((item) => typeof item === 'number')) {
+      return [];
+    }
+
     return value.flatMap(collectText);
   }
 
   if (value && typeof value === 'object') {
     return Object.entries(value)
-      .filter(([key]) => !/url|metadata|id|created|updated/i.test(key))
+      .filter(([key]) => !/url|metadata|id|created|updated|bbox|bound|coordinate|confidence|score|page|width|height|angle/i.test(key))
       .flatMap(([, nested]) => collectText(nested));
   }
 
   return [];
 }
 
-function compactDocumentSummary(document: ParsedDocument) {
-  const entries = Object.entries(document.fields).filter(([, value]) => value);
+function compactDocumentSummary(document: ParsedDocument, language: LanguageCode = 'en') {
+  const entries = Object.entries(getDocumentDisplayFields(document, language)).filter(([, value]) => value);
 
   if (!entries.length) {
     return document.rawText.slice(0, 500);
